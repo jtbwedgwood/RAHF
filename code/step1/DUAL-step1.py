@@ -1,6 +1,6 @@
 
 import fire
-from datasets import load_dataset,load_from_disk
+from datasets import load_dataset,load_from_disk, DatasetDict
 from transformers import  AutoTokenizer, TrainingArguments,AutoModelForCausalLM
 import torch
 from trl import SFTTrainer
@@ -64,8 +64,8 @@ def train(
     )
     tokenizer.padding_side = "right"
 
-    train_data = load_dataset(data_path)
-    #train_data = load_from_disk(data_path)
+    train_data = load_from_disk(data_path)
+    
     if "hh-rlhf" in data_path:
         process_fn = partial(process_hh_rlhf,tokenizer=tokenizer)
     elif "ultrafeedback" in data_path:
@@ -91,11 +91,15 @@ def train(
         logging_strategy="steps"
     )
 
-
+    # ensure training data will not yield KeyError
+    if isinstance(train_data, DatasetDict):
+        train_ds = train_data["train"]
+    else:
+        train_ds = train_data
 
     trainer = SFTTrainer(
         model=model,
-        train_dataset=train_data['train'],
+        train_dataset=train_ds,
         dataset_text_field="text",
         max_seq_length=MAX_LENGTH,
         args=training_args,

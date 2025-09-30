@@ -2,3 +2,4 @@ code/logs/*
 huggingface_token.txt
 .cache/
 .venv/
+data/ultrafeedback/rm/cache*
