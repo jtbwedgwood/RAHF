@@ -1,3 +1,12 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Load environment variables (must be in same dir or specify full path)
+source "$(dirname "$0")/.env.sh"
+
+echo "Using bucket: $S3_BUCKET_URI"
+echo "Sending alerts to: $ALERT_EMAIL_TO"
+
 CUDA_VISIBLE_DEVICES=0,1,2,3 python step1/SCIT-step1.py \
     --base_model  "Liuwenhao2022/RAHF-SFT" \
     --seed 42 \

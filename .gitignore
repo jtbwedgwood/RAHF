@@ -3,3 +3,6 @@ huggingface_token.txt
 .cache/
 .venv/
 data/ultrafeedback/rm/cache*
+aws/
+code/bash/env.sh
+test.txt

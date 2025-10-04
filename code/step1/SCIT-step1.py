@@ -13,6 +13,43 @@ import argparse
 MAX_INPUT_LENGTH = 256
 
 
+import time, traceback, subprocess
+import boto3
+
+
+# env variables
+S3_BUCKET_URI = os.environ.get("S3_BUCKET_URI")
+ALERT_EMAIL_TO = os.environ.get("ALERT_EMAIL_TO")
+ALERT_EMAIL_FROM = os.environ.get("ALERT_EMAIL_FROM", ALERT_EMAIL_TO)
+AWS_REGION = os.environ.get("AWS_DEFAULT_REGION", "us-east-1")
+
+def _send_email(subject: str, body: str):
+    """Try SES via boto3, fallback to SMTP if configured; otherwise noop."""
+    if ALERT_EMAIL_TO:
+        # boto3 SES first
+        try:
+            ses = boto3.client("ses", region_name=AWS_REGION)
+            ses.send_email(
+                Source=ALERT_EMAIL_FROM,
+                Destination={"ToAddresses": [ALERT_EMAIL_TO]},
+                Message={
+                    "Subject": {"Data": subject},
+                    "Body": {"Text": {"Data": body[:200000]}}
+                },
+            )
+            return
+        except Exception:
+            pass
+
+def _s3_sync(local_dir: str, remote_uri: str):
+    if not remote_uri:
+        return
+    subprocess.run(
+        ["aws", "s3", "sync", local_dir, remote_uri, "--only-show-errors"],
+        check=True
+    )
+
+
 def parse_args():
     parser = argparse.ArgumentParser(
         description="SFT training arguments")
@@ -110,6 +147,35 @@ def parse_args():
 
     return args
 
+
+class S3HourlySyncCallback(transformers.TrainerCallback):
+    def __init__(self, local_dir: str, remote_uri: str, email: bool = True, interval_sec: int = 3600):
+        self.local_dir = local_dir
+        self.remote_uri = remote_uri
+        self.email = email
+        self.interval = interval_sec
+        self._last = time.time()
+
+    def on_log(self, args, state, control, **kwargs):
+        # called every logging_steps; piggyback to check time
+        now = time.time()
+        if self.remote_uri and (now - self._last) >= self.interval:
+            self._last = now
+            try:
+                _s3_sync(self.local_dir, self.remote_uri)
+                if self.email:
+                    _send_email(
+                        subject=f"[Run] Hourly sync OK @ step {state.global_step}",
+                        body=f"Synced {self.local_dir} -> {self.remote_uri}\n"
+                             f"Global step: {state.global_step}, Epoch: {state.epoch}"
+                    )
+            except Exception as e:
+                _send_email(
+                    subject=f"[Run] Hourly sync FAILED @ step {state.global_step}",
+                    body=f"Error: {e}\n\nTraceback:\n{traceback.format_exc()}"
+                )
+
+
 def train():
     
     args = parse_args()
@@ -155,7 +221,15 @@ def train():
     save_steps = args.save_steps
     gradient_accumulation_steps = batch_size // micro_batch_size
 
-    # torch.manual_seed(seed)
+    # since we are trying to reproduce results, set seed
+    torch.manual_seed(seed)
+
+    # Log basic env
+    if int(os.environ.get("LOCAL_RANK", 0)) == 0:
+        print("CUDA devices:", torch.cuda.device_count())
+        if torch.cuda.is_available():
+            props = torch.cuda.get_device_properties(0)
+            print(f"GPU: {props.name}, {props.total_memory/1e9:.1f} GB")
     
     device_map = "auto"
     world_size = int(os.environ.get("WORLD_SIZE", 1))
@@ -317,7 +391,6 @@ def train():
 
     print(train_data)
 
-
     class CustomTrainer(transformers.Trainer):
         def compute_loss(self, model, inputs, return_outputs=False):
             #modified from https://github.com/tianjunz/HIR
@@ -356,7 +429,10 @@ def train():
             
             return (loss, outputs) if return_outputs else loss
     
-        
+    # create callback
+    remote = S3_BUCKET_URI.rstrip('/') if S3_BUCKET_URI else None
+    s3_cb = S3HourlySyncCallback(local_dir=args.output_dir, remote_uri=remote, email=True, interval_sec=3600)
+
     trainer = CustomTrainer(
         model=model,
         train_dataset=train_data,
@@ -367,6 +443,7 @@ def train():
             num_train_epochs=num_epochs,
             learning_rate=learning_rate,
             seed=seed,
+            logging_dir=os.path.join(output_dir, "logs"),
             logging_steps=1,
             optim="adamw_torch",
             save_strategy="steps",
@@ -382,14 +459,40 @@ def train():
         data_collator=transformers.DataCollatorForSeq2Seq(
             tokenizer, pad_to_multiple_of=8, return_tensors="pt", padding=True
         ),
+        callbacks=[s3_cb],
     )
     model.config.use_cache = False
 
-
-    trainer.train()
+    try:
+        trainer.train()
+    except Exception as e:
+        # push logs/checkpoints you already have
+        try:
+            if S3_BUCKET_URI:
+                _s3_sync(args.output_dir, S3_BUCKET_URI.rstrip('/'))
+        finally:
+            _send_email(
+                subject="[Run] TRAINING FAILED",
+                body=f"Exception: {e}\n\nTraceback:\n{traceback.format_exc()}"
+            )
+        raise
 
 
     model.save_pretrained(output_dir)
+    tokenizer.save_pretrained(output_dir)   # ensure full artifacts
+    # final sync + success email
+    if S3_BUCKET_URI:
+        try:
+            _s3_sync(output_dir, S3_BUCKET_URI.rstrip('/'))
+            _send_email(
+                subject="[Run] TRAINING COMPLETE",
+                body=f"Saved model+tokenizer to {output_dir} and synced to {S3_BUCKET_URI}"
+            )
+        except Exception as e:
+            _send_email(
+                subject="[Run] COMPLETE but S3 sync FAILED",
+                body=f"Output dir: {output_dir}\nS3: {S3_BUCKET_URI}\nError: {e}\n{traceback.format_exc()}"
+            )
 
     print(
         "\n If there's a warning about missing keys above, please disregard :)"
