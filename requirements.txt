@@ -10,3 +10,4 @@ scipy
 torch
 boto3
 hf_transfer
+deepspeed

@@ -231,21 +231,37 @@ def train():
             props = torch.cuda.get_device_properties(0)
             print(f"GPU: {props.name}, {props.total_memory/1e9:.1f} GB")
     
-    device_map = "auto"
-    world_size = int(os.environ.get("WORLD_SIZE", 1))
-    ddp = world_size != 1
+    world_size = int(os.environ.get("WORLD_SIZE", "1"))
+    ddp = world_size > 1
+
+    # Do NOT pass a device_map when using HF Trainer/Accelerate
+    device_map = None
+
+    # If launched with torchrun, set the CUDA device explicitly
+    local_rank_env = os.environ.get("LOCAL_RANK")
+    if ddp and local_rank_env is not None:
+        local_rank = int(local_rank_env)
+        torch.cuda.set_device(local_rank)
+
+    gradient_accumulation_steps = (batch_size // micro_batch_size)
     if ddp:
-        device_map = {"": int(os.environ.get("LOCAL_RANK") or 0)}
-        gradient_accumulation_steps = gradient_accumulation_steps // world_size
+        gradient_accumulation_steps //= world_size
+        assert gradient_accumulation_steps >= 1, "Increase batch_size or reduce world_size/micro_batch_size"
+
 
     # Check if parameter passed or if set within environ
 
     model = LlamaForCausalLM.from_pretrained(
         base_model,
         torch_dtype=torch.bfloat16,
-        device_map=device_map,
+        device_map=None,
         trust_remote_code=True,
         use_auth_token=True
+    )
+
+    # memory saving
+    model.gradient_checkpointing_enable(
+        gradient_checkpointing_kwargs={"use_reentrant": False}
     )
 
     tokenizer = LlamaTokenizer.from_pretrained(base_model)
@@ -453,7 +469,9 @@ def train():
             group_by_length=group_by_length,
             report_to="none",
             remove_unused_columns=False,
-            save_safetensors = False
+            save_safetensors = False,
+            bf16=True,
+            fp16=False,
         ),
         # callbacks=[SavePeftModelCallback],
         data_collator=transformers.DataCollatorForSeq2Seq(

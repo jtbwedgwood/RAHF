@@ -7,12 +7,15 @@ source "$(dirname "$0")/env.sh"
 echo "Using bucket: $S3_BUCKET_URI"
 echo "Sending alerts to: $ALERT_EMAIL_TO"
 
-CUDA_VISIBLE_DEVICES=0,1,2,3 python /root/RAHF/code/step1/SCIT-step1.py \
+unset WORLD_SIZE LOCAL_RANK RANK
+unset CUDA_VISIBLE_DEVICES
+
+torchrun /root/RAHF/code/step1/SCIT-step1.py \
     --base_model  "Liuwenhao2022/RAHF-SFT" \
     --seed 42 \
     --data_path "/root/RAHF/data/ultrafeedback/rm" \
     --batch_size 64 \
-    --micro_batch_size 2 \
+    --micro_batch_size 1 \
     --num_epochs 2 \
     --learning_rate 2e-5 \
     --max_length 768 \
