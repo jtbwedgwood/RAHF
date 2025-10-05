@@ -203,13 +203,46 @@ class HeartbeatCB(transformers.TrainerCallback):
 def train():
 
     # handle sigterm and sigint
-    import signal, sys
-    def _on_term(*_):
+    import os, sys, signal, subprocess, time, traceback
+
+    def _snapshot(outdir, note):
+        ts = time.strftime("%Y%m%d-%H%M%S")
+        p = os.path.join(outdir, f"diag_{ts}.txt")
         try:
-            if S3_BUCKET_URI: _s3_sync(output_dir, S3_BUCKET_URI.rstrip('/'), timeout=300)
-        finally:
-            _send_email("SIGTERM received","Synced & exiting"); sys.exit(1)
-    for sig in (signal.SIGTERM, signal.SIGINT): signal.signal(sig, _on_term)
+            with open(p, "w") as f:
+                f.write(f"[{ts}] {note}\n\n")
+                cmds = [
+                    ["uname","-a"],
+                    ["uptime"],
+                    ["df","-h"],
+                    ["nvidia-smi"],
+                    ["ps","aux"],
+                    ["free","-h"],
+                ]
+                for c in cmds:
+                    f.write(f"\n$ {' '.join(c)}\n")
+                    try:
+                        f.write(subprocess.check_output(c, text=True, timeout=5))
+                    except Exception as e:
+                        f.write(f"(failed: {e})\n")
+        except Exception:
+            pass
+        return p
+
+    def _sig_handler_factory(outdir, s3_uri, email_fn, sync_fn):
+        def _h(signum, _frame):
+            try:
+                p = _snapshot(outdir, f"Received signal {signum}")
+                if s3_uri:
+                    # small, fast sync so we don’t hang
+                    subprocess.run(["timeout","120","aws","s3","cp", p, f"{s3_uri.rstrip('/')}/{os.path.basename(p)}"], check=False)
+            finally:
+                try:
+                    email_fn("SIGTERM/SIGINT received", f"Signal {signum}. Snapshot written: {p}")
+                except Exception:
+                    pass
+                sys.exit(1)
+        return _h
 
     
     args = parse_args()
@@ -254,6 +287,10 @@ def train():
     resume_from_checkpoint = args.resume_from_checkpoint  # either training checkpoint or final adapter
     save_steps = args.save_steps
     gradient_accumulation_steps = batch_size // micro_batch_size
+
+    # handle sigterm and sigint
+    signal.signal(signal.SIGTERM, _sig_handler_factory(output_dir, os.environ.get("S3_BUCKET_URI"), _send_email, _s3_sync))
+    signal.signal(signal.SIGINT,  _sig_handler_factory(output_dir, os.environ.get("S3_BUCKET_URI"), _send_email, _s3_sync))
 
     # since we are trying to reproduce results, set seed
     torch.manual_seed(seed)

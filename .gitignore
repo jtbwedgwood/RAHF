@@ -7,3 +7,4 @@ aws/
 code/bash/env.sh
 test.txt
 model/SCIT/hir/checkpoint-*
+model/SCIT/hir/tmp-checkpoint-*
