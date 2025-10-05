@@ -21,5 +21,6 @@ torchrun /root/RAHF/code/step1/SCIT-step1.py \
     --max_length 768 \
     --warmup_ratio 0.1 \
     --save_steps 400 \
-    --output_dir '/root/RAHF/model/SCIT/hir' 
+    --output_dir '/root/RAHF/model/SCIT/hir' \
+    --resume_from_checkpoint '/root/RAHF/model/SCIT/hir/checkpoint-400'
 

@@ -17,6 +17,23 @@ import time, traceback, subprocess
 import boto3
 
 
+# context manager to allow full pickle loading for legacy checkpoints
+from contextlib import contextmanager
+import torch
+
+@contextmanager
+def allow_legacy_pickle_loads():
+    _orig_load = torch.load
+    def _load(*a, **k):
+        k.setdefault("weights_only", False)  # allow full pickle during resume
+        return _orig_load(*a, **k)
+    torch.load = _load
+    try:
+        yield
+    finally:
+        torch.load = _orig_load
+
+
 # env variables
 S3_BUCKET_URI = os.environ.get("S3_BUCKET_URI")
 ALERT_EMAIL_TO = os.environ.get("ALERT_EMAIL_TO")
@@ -41,11 +58,11 @@ def _send_email(subject: str, body: str):
         except Exception:
             pass
 
-def _s3_sync(local_dir: str, remote_uri: str):
+def _s3_sync(local_dir: str, remote_uri: str, timeout: int = 900):
     if not remote_uri:
         return
     subprocess.run(
-        ["aws", "s3", "sync", local_dir, remote_uri, "--only-show-errors"],
+        ["timeout", str(timeout), "aws", "s3", "sync", local_dir, remote_uri, "--only-show-errors"],
         check=True
     )
 
@@ -175,8 +192,25 @@ class S3HourlySyncCallback(transformers.TrainerCallback):
                     body=f"Error: {e}\n\nTraceback:\n{traceback.format_exc()}"
                 )
 
+class HeartbeatCB(transformers.TrainerCallback):
+    def __init__(self, out): self.path=os.path.join(out,"heartbeat.txt")
+    def on_log(self, args, state, control, **kw):
+        from time import ctime
+        with open(self.path,"a") as f: f.write(f"{ctime()} step={state.global_step}\n")
+
+
 
 def train():
+
+    # handle sigterm and sigint
+    import signal, sys
+    def _on_term(*_):
+        try:
+            if S3_BUCKET_URI: _s3_sync(output_dir, S3_BUCKET_URI.rstrip('/'), timeout=300)
+        finally:
+            _send_email("SIGTERM received","Synced & exiting"); sys.exit(1)
+    for sig in (signal.SIGTERM, signal.SIGINT): signal.signal(sig, _on_term)
+
     
     args = parse_args()
     
@@ -467,7 +501,7 @@ def train():
             output_dir=output_dir,
             ddp_find_unused_parameters=False if ddp else None,
             group_by_length=group_by_length,
-            report_to="none",
+            report_to=["tensorboard"],
             remove_unused_columns=False,
             save_safetensors = False,
             bf16=True,
@@ -477,12 +511,16 @@ def train():
         data_collator=transformers.DataCollatorForSeq2Seq(
             tokenizer, pad_to_multiple_of=8, return_tensors="pt", padding=True
         ),
-        callbacks=[s3_cb],
+        callbacks=[s3_cb, HeartbeatCB(output_dir)],
     )
     model.config.use_cache = False
 
     try:
-        trainer.train()
+        if resume_from_checkpoint:
+            with allow_legacy_pickle_loads():
+                trainer.train(resume_from_checkpoint=resume_from_checkpoint)
+        else:
+            trainer.train()
     except Exception as e:
         # push logs/checkpoints you already have
         try:

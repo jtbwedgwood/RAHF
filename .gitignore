@@ -6,3 +6,4 @@ data/ultrafeedback/rm/cache*
 aws/
 code/bash/env.sh
 test.txt
+model/SCIT/hir/checkpoint-*
