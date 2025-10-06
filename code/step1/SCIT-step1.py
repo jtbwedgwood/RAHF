@@ -198,6 +198,15 @@ class HeartbeatCB(transformers.TrainerCallback):
         from time import ctime
         with open(self.path,"a") as f: f.write(f"{ctime()} step={state.global_step}\n")
 
+class AnnounceSaveCB(transformers.TrainerCallback):
+    def on_save(self, args, state, control, **kw):
+        p = os.path.join(args.output_dir, f"checkpoint-{state.global_step}")
+        print(f"[SAVE] attempting {p}")
+        try:
+            _send_email("Save starting", f"checkpoint-{state.global_step}")
+        except Exception:
+            pass
+
 
 
 def train():
@@ -548,7 +557,7 @@ def train():
         data_collator=transformers.DataCollatorForSeq2Seq(
             tokenizer, pad_to_multiple_of=8, return_tensors="pt", padding=True
         ),
-        callbacks=[s3_cb, HeartbeatCB(output_dir)],
+        callbacks=[s3_cb, HeartbeatCB(output_dir), AnnounceSaveCB()],
     )
     model.config.use_cache = False
 

@@ -14,6 +14,7 @@ unset CUDA_VISIBLE_DEVICES
 LOG_DIR=/workspace/ckpts/hir
 LOG_FILE="$LOG_DIR/train.stdout.log"
 mkdir -p "$LOG_DIR"
+trap 'echo "$(date) [runner] caught SIGTERM" | tee -a $LOG_FILE' TERM
 
 # Line-buffer app stdout/stderr so logs stream immediately, then tee to file
 stdbuf -oL -eL torchrun --nproc_per_node=1 /root/RAHF/code/step1/SCIT-step1.py \
@@ -28,6 +29,6 @@ stdbuf -oL -eL torchrun --nproc_per_node=1 /root/RAHF/code/step1/SCIT-step1.py \
   --warmup_ratio 0.1 \
   --save_steps 200 \
   --output_dir /workspace/ckpts/hir \
-  --resume_from_checkpoint "/root/RAHF/model/SCIT/hir/checkpoint-400" \
+  --resume_from_checkpoint "/workspace/ckpts/hir/checkpoint-400" \
   2>&1 | tee -a "$LOG_FILE"
 
