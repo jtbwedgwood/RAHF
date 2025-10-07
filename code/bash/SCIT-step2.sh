@@ -1,7 +1,25 @@
-CUDA_LAUNCH_BLOCKING=1 CUDA_VISIBLE_DEVICES=0,1,2,3 python step2/RAHF.py \
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Load environment variables (must be in same dir or specify full path)
+source "$(dirname "$0")/env.sh"
+
+echo "Using bucket: $S3_BUCKET_URI"
+
+unset WORLD_SIZE LOCAL_RANK RANK
+unset CUDA_VISIBLE_DEVICES
+
+# Log file
+LOG_DIR=/workspace/ckpts/hir
+LOG_FILE="$LOG_DIR/train.stdout.log"
+mkdir -p "$LOG_DIR"
+trap 'echo "$(date) [runner] caught SIGTERM" | tee -a $LOG_FILE' TERM
+
+# Line-buffer app stdout/stderr so logs stream immediately, then tee to file
+stdbuf -oL -eL python /root/RAHF/code/step2/RAHF.py \
     --method "SCIT" \
-    --model_name_or_path  "../model/SCIT/hir" \
-    --model_base_name_or_path  "../model/SCIT/hir" \
+    --model_name_or_path  "/workspace/ckpts/hir" \
+    --model_base_name_or_path  "/workspace/ckpts/hir" \
     --load_in_8bit False \
     --user_tag 'Human: ' \
     --assistant_tag '\n\nAssistant: ' \
@@ -18,8 +36,8 @@ CUDA_LAUNCH_BLOCKING=1 CUDA_VISIBLE_DEVICES=0,1,2,3 python step2/RAHF.py \
     --data_seed 42 \
     --data_type "random" \
     --dataset_name "ultra_preference_prompt"\
-    --data_path "../data/ultrafeedback/ppo" \
-    --output_dir "../model/SCIT/final" \
+    --data_path "/root/RAHF/data/ultrafeedback/ppo" \
+    --output_dir "/workspace/SCIT" \
     --overwrite_output_dir \
     --max_steps 450 \
     --bf16 True \
@@ -41,4 +59,7 @@ CUDA_LAUNCH_BLOCKING=1 CUDA_VISIBLE_DEVICES=0,1,2,3 python step2/RAHF.py \
     --q_lora False \
     --gradient_checkpointing True \
     --max_res_len 512 \
-    --report_to none 
+    --report_to none \
+  2>&1 | tee -a "$LOG_FILE"
+
+
