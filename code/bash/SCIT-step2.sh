@@ -60,6 +60,7 @@ stdbuf -oL -eL python /root/RAHF/code/step2/RAHF.py \
     --gradient_checkpointing True \
     --max_res_len 512 \
     --report_to none \
+    --resume_from_checkpoint "/workspace/SCIT/checkpoint-250" \
   2>&1 | tee -a "$LOG_FILE"
 
 

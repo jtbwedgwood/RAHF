@@ -22,6 +22,23 @@ from args import (
     RAHFArguments,
 )
 
+# context manager to allow full pickle loading for legacy checkpoints
+from contextlib import contextmanager
+
+
+@contextmanager
+def allow_legacy_pickle_loads():
+    _orig_load = torch.load
+    def _load(*a, **k):
+        k.setdefault("weights_only", False)  # allow full pickle during resume
+        return _orig_load(*a, **k)
+    torch.load = _load
+    try:
+        yield
+    finally:
+        torch.load = _orig_load
+
+
 S3_BUCKET_URI = os.environ.get("S3_BUCKET_URI")
 
 def _s3_sync(local_dir: str, remote_uri: str, timeout: int = 900):
@@ -237,15 +254,18 @@ def train():
         model=model, tokenizer=tokenizer, args=training_args, train_dataset=train_dataset
     )
     model.config.use_cache = False
-    trainer.evaluate(eval_dataset=val_datasets, sanity_check=True)
+    # trainer.evaluate(eval_dataset=val_datasets, sanity_check=True)
 
-    trainer.train()
+    with allow_legacy_pickle_loads():
+        trainer.train(
+            # needed due to incorrect env variables
+            resume_from_checkpoint="/workspace/SCIT/checkpoint-250"
+        )
     trainer.save_state()
 
-    if training_args.local_rank == 0:
-        model.save_pretrained(training_args.output_dir) # saving adapter
-        merged_model = model.merge_and_unload() # saving full model
-        merged_model.save_pretrained(training_args.output_dir)
+    model.save_pretrained(training_args.output_dir) # saving adapter
+    merged_model = model.merge_and_unload() # saving full model
+    merged_model.save_pretrained(training_args.output_dir)
 
     _s3_sync(training_args.output_dir, S3_BUCKET_URI.rstrip('/'))
 
