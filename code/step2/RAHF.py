@@ -24,6 +24,7 @@ from args import (
 
 # context manager to allow full pickle loading for legacy checkpoints
 from contextlib import contextmanager
+import subprocess
 
 
 @contextmanager
@@ -259,7 +260,7 @@ def train():
     with allow_legacy_pickle_loads():
         trainer.train(
             # needed due to incorrect env variables
-            resume_from_checkpoint="/workspace/SCIT/checkpoint-250"
+            resume_from_checkpoint="/workspace/SCIT/checkpoint-450"
         )
     trainer.save_state()
 
